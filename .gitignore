@@ -1,0 +1,4 @@
+# Ignorar el entorno virtual 
+detect_Plate/Scripts/
+detect_Plate/Lib/
+detect_Plate/Include/
