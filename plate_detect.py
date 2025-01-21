@@ -4,6 +4,7 @@ import numpy as np
 import pytesseract
 import glob
 import re
+import imutils
 
 #Para windows, hay que especificar la ruta de tesseract
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -102,17 +103,17 @@ def get_boxes_and_filter5(img_original, contours):
     cv2.imshow('5_recuadros', area5_contours)
     return contours5
 
-def filter_aspectratio(img, contours):
+def filter_aspectratio(contours):
     """
     - NAME: filter_aspectratio
     - DESCRIPTION: Se filtran los recuadros por el por su aspect ratio
     - PARAMETERS: 
         - contours: contronos encontrados en la imagen
     - RETURNS:    
-        - placa: contiene el recuadro de la placa
+        - the_rectangle: contiene el recuadro de la placa
     """
     rectangles = []
-    error = 100000000
+    error = 100
     for i in range(len(contours)):
         rect = cv2.minAreaRect(contours[i])  # Calcula el rectángulo de área mínima que puede encerrar el contorno actual (con rotación permitida).
         approx = cv2.boxPoints(rect)  # Obtiene los cuatro puntos del rectángulo rotado.
@@ -120,12 +121,109 @@ def filter_aspectratio(img, contours):
         [x, y, w, h] = cv2.boundingRect(approx)  # Calcula las medidas del cuadro delimitador sin rotación.
         aspect_ratio = w/h  # Se calcula el aspect ratio
         #### Para colombia las medidas de las placas son 330 mm de ancho y 160 mm de alto
-        if(1.9 < aspect_ratio and aspect_ratio < 2.5):            
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            placa = gray[y:y+h, x:x+w]
-            placa_text = pytesseract.image_to_string(placa, config='--psm 11')
-            cv2.imshow('Placa', placa)
-            print('Placa= ', placa_text)
+        aspect_error = abs(2-aspect_ratio)  # es la diferencia absoluta entre la relación de aspecto calculada y la relación de aspecto teórica deseada que es 2   
+        # Se deja el recuadro con el menor error
+        if(aspect_error < error):  # Si el aspect_error actual es menor que el error anterior, se actualiza el error y se guarda el cuadro delimitador             
+            error = aspect_error
+            the_rectangle = approx.reshape(4,1,2)
+        # MOD EDU
+        # if(1.9 < aspect_ratio and aspect_ratio < 2.5):            
+        #     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        #     placa = gray[y:y+h, x:x+w]
+        #     placa_text = pytesseract.image_to_string(placa, config='--psm 11')
+        #     cv2.imshow('Placa', placa)
+        #     print('Placa= ', placa_text)
+        return the_rectangle
+
+def transformada_perspectiva(img, bound):
+    """
+    - NAME: transformada_perspectiva
+    - DESCRIPTION: Esta función realiza una transformación de perspectiva en una placa utilizando
+    una imagen original y un cuadro delimitador de 4 puntos.
+    - PARAMETERS: 
+        - img: imagen original
+        - bound: 4 puntos del recuadro de la placa                        
+    - RETURNS:
+        - warped: contiene la transformada de perspectiva
+        - corner_plate: Esquinas de la placa
+    """
+    # Se halla la forma de la imagen 
+    h, w, _ = img.shape
+    # Se halla las coordenadas de la imagen
+    img_corners= np.float32(np.array([[0,0],
+                           [w-1,0],
+                           [w-1, h-1],
+                           [0, h-1]]))
+    
+    # Ordenar los puntos en sentido de las agujas del reloj  
+    rect = np.zeros((4, 2), dtype="float32")  # Crea una lista de coordenadas que estará ordenada en el sentido de las agujas del reloj: la primera entrada será la esquina superior izquierda
+    s = bound.sum(axis=1)
+    rect[0] = bound[np.argmin(s)]
+    rect[2] = bound[np.argmax(s)]
+    diff = np.diff(bound, axis=1)
+    rect[1] = bound[np.argmin(diff)]
+    rect[3] = bound[np.argmax(diff)]
+    # Ya se han ordenado los puntos en sentido de las agujas del reloj
+    bound2 = rect
+
+    # Redimensionar el tamaño del recuadro
+    plate_2 = img.copy()
+    xt = 0
+    yt = 0
+    bound3 = np.array([[bound2[0,0]-xt, bound2[0,1]-yt], 
+                       [bound2[1,0]+xt, bound2[1,1]-yt],
+                       [bound2[2,0]+xt, bound2[2,1]+yt],
+                       [bound2[3,0]-xt, bound2[3,1]+yt]], dtype=np.uint16)
+         
+    bound3_f = np.float32(bound3)
+    
+    # Obtener la matriz de transformación de perspectiva
+    T = cv2.getPerspectiveTransform(bound3_f, img_corners) 
+    
+    # Retornar la imagen transformada y la imagen original con las esquinas del cuadro delimitador
+    warped = cv2.warpPerspective(img.copy(), T, (w,h))
+    
+    # RETURN warped image and original image+corners of bounding box
+    return warped
+
+def plate_processing(plate):
+    """
+    - NAME: plate_processing
+    - DESCRIPTION: Esta función procesa la imagen de la placa detectada.
+    La convierte a escala de grises, la filtra para eliminar ruido y resaltar los caracteres 
+    - PARAMETERS: 
+        - plate: imagen de la placa                    
+    - RETURNS:
+        - warped: contiene la transformada de perspectiva
+    """
+    gray = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY) # Convertimos la imagen a escala de grises
+
+    # Aplicamos thresholding automático con el algoritmo de Otsu. Esto hará que el texto se vea blanco, y los elementos
+    # del fondo sean menos prominentes.
+    thresholded = cv2.threshold (gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    
+    #Calculamos y normalizamos la transformada de distancia.
+    dist = cv2.distanceTransform (thresholded, cv2.DIST_L2, 5)
+    dist = cv2.normalize(dist, dist, 0, 1.0, cv2.NORM_MINMAX)
+    dist = (dist*255).astype('uint8')
+    # Aplicamos thresholding al resultado de la operación anterior, y mostramos el resultado en pantalla.
+    dist = cv2.threshold (dist, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    # Aplicamos apertura para desconectar manchas y blobs de los elementos que nos interesan (los números)
+    kernel = cv2.getStructuringElement (cv2.MORPH_ELLIPSE, (7, 7))
+    opening = cv2.morphologyEx(dist, cv2.MORPH_OPEN, kernel)
+
+    # Hallamos los contornos de los números en la imagen.
+    contours = cv2.findContours(opening.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = imutils.grab_contours(contours)
+
+    chars = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        # Solo los contornos grandes perdurarán, ya que corresponden a los números que nos interesan.
+        if w >= 35 and h >= 100:
+            chars.append(contour)
 
 #main
 #path imgaes
@@ -137,8 +235,8 @@ for i in iterations:  # Se recorre cada imagen
     img_original, img_filter = read_and_filter_images(names[i])  # Se filtra la imagen
     contours = border_detect_and_count(img_filter)  # Se hallan los contornos
     area5_contours = get_boxes_and_filter5(img_original, contours)
-    placa = filter_aspectratio(img_filter, area5_contours)
-    # 
-
+    rectangle_placa = filter_aspectratio(area5_contours)
+    trans_prespect = transformada_perspectiva(img_original, np.int32(rectangle_placa.reshape(4,2)))
+    
     cv2.waitKey(0)
     
