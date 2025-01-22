@@ -112,7 +112,6 @@ def filter_aspectratio(contours):
     - RETURNS:    
         - the_rectangle: contiene el recuadro de la placa
     """
-    rectangles = []
     error = 100
     for i in range(len(contours)):
         rect = cv2.minAreaRect(contours[i])  # Calcula el rectángulo de área mínima que puede encerrar el contorno actual (con rotación permitida).
@@ -194,20 +193,19 @@ def plate_processing(plate):
     - PARAMETERS: 
         - plate: imagen de la placa                    
     - RETURNS:
-        - warped: contiene la transformada de perspectiva
+        - final: imagen de la placa procesada
     """
     gray = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY) # Convertimos la imagen a escala de grises
-
     # Aplicamos thresholding automático con el algoritmo de Otsu. Esto hará que el texto se vea blanco, y los elementos
     # del fondo sean menos prominentes.
-    thresholded = cv2.threshold (gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    thresholded = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
     
     #Calculamos y normalizamos la transformada de distancia.
-    dist = cv2.distanceTransform (thresholded, cv2.DIST_L2, 5)
+    dist = cv2.distanceTransform(thresholded, cv2.DIST_L2, 5)
     dist = cv2.normalize(dist, dist, 0, 1.0, cv2.NORM_MINMAX)
     dist = (dist*255).astype('uint8')
     # Aplicamos thresholding al resultado de la operación anterior, y mostramos el resultado en pantalla.
-    dist = cv2.threshold (dist, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    dist = cv2.threshold (dist, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
 
     # Aplicamos apertura para desconectar manchas y blobs de los elementos que nos interesan (los números)
     kernel = cv2.getStructuringElement (cv2.MORPH_ELLIPSE, (7, 7))
@@ -220,10 +218,22 @@ def plate_processing(plate):
     chars = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        
         # Solo los contornos grandes perdurarán, ya que corresponden a los números que nos interesan.
-        if w >= 35 and h >= 100:
+        if w >= 35 and h >= 90:
             chars.append(contour)
+    # Hallamos la cáscara convexa que envuelve todos los números.
+    chars = np.vstack([chars[i] for i in range(0, len(chars))])
+    hull = cv2.convexHull(chars)
+
+    # Creamos una máscara y la alargamos.
+    mask = np.zeros(plate.shape[:2], dtype='uint8')
+    cv2.drawContours(mask, [hull], -1, 255, -1)
+    mask = cv2.dilate(mask, None, iterations=2)
+    
+    # Aplicamos la máscara para aislar los números del fondo.
+    final = cv2.bitwise_and(opening, opening, mask=mask)
+    cv2.imshow('PLATE', final)
+    return final
 
 #main
 #path imgaes
@@ -237,6 +247,8 @@ for i in iterations:  # Se recorre cada imagen
     area5_contours = get_boxes_and_filter5(img_original, contours)
     rectangle_placa = filter_aspectratio(area5_contours)
     trans_prespect = transformada_perspectiva(img_original, np.int32(rectangle_placa.reshape(4,2)))
-    
+    plate_image = plate_processing(trans_prespect)
+    plate_text = pytesseract.image_to_string(plate_image, config = '--psm 10 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ-1234567890')
+    print('Plate: ', plate_text)
     cv2.waitKey(0)
     
